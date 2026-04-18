@@ -4,6 +4,8 @@ from datetime import datetime, timedelta
 from typing import Optional
 from jose import jwt, JWTError
 from dotenv import load_dotenv
+from fastapi import Depends, HTTPException, status
+from fastapi.security import OAuth2PasswordBearer
 
 load_dotenv()
 
@@ -12,19 +14,22 @@ JWT_REFRESH_SECRET = os.getenv("JWT_REFRESH_SECRET")
 
 if not JWT_SECRET or not JWT_REFRESH_SECRET:
     raise ValueError("FATAL ERROR: JWT_SECRET and JWT_REFRESH_SECRET must be explicitly set in the .env file for security purposes.")
+
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60  # 1 hour access tokens
 REFRESH_TOKEN_EXPIRE_DAYS = 30    # 30-day refresh tokens
 
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login", auto_error=False)
+
 def get_password_hash(password: str) -> str:
-    """Hash a password using bcrypt directly to avoid passlib bugs."""
+    """Hash a password using bcrypt."""
     pwd_bytes = password.encode('utf-8')
     salt = bcrypt.gensalt()
     hashed = bcrypt.hashpw(pwd_bytes, salt)
     return hashed.decode('utf-8')
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    """Verify a password using bcrypt directly."""
+    """Verify a password using bcrypt."""
     try:
         password_bytes = plain_password.encode('utf-8')
         hashed_bytes = hashed_password.encode('utf-8')
@@ -61,3 +66,22 @@ def decode_refresh_token(token: str) -> Optional[dict]:
         return payload
     except JWTError:
         return None
+
+def get_current_user(token: str = Depends(oauth2_scheme)):
+    """Strong authentication dependency for protected routes."""
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    if not token:
+        raise credentials_exception
+    
+    payload = decode_access_token(token)
+    if payload is None:
+        raise credentials_exception
+        
+    username: str = payload.get("sub")
+    if username is None:
+        raise credentials_exception
+    return username

@@ -16,7 +16,7 @@ import time
 
 from models import SessionLocal, init_db, Document, VectorEntry, ChatHistory, AppSettings, ChatSession, User
 from services import CohereService, GrokService, ParserService
-from auth import create_access_token, create_refresh_token, decode_access_token, decode_refresh_token, get_password_hash, verify_password
+from auth import create_access_token, create_refresh_token, decode_access_token, decode_refresh_token, get_password_hash, verify_password, get_current_user
 
 # --- Professional Logging Setup ---
 logging.basicConfig(
@@ -149,7 +149,8 @@ def get_suggestions(db: Session = Depends(get_db)):
 def ingest_file(
     file: UploadFile = File(...),
     category: str = Form("General"),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user: str = Depends(get_current_user)
 ):
     with ingestion_lock:
         content = file.file.read()
@@ -201,7 +202,7 @@ def ingest_file(
         return {"status": "success", "success": True, "message": f"Ingested {len(chunks)} chunks from '{file.filename}'.", "chunks": len(chunks)}
 
 @app.post("/ingest/manual", tags=["Ingestion"], response_model=StandardResponse, summary="Add Manual Q&A")
-def ingest_manual(req: ManualKnowledgeRequest, db: Session = Depends(get_db)):
+def ingest_manual(req: ManualKnowledgeRequest, db: Session = Depends(get_db), user: str = Depends(get_current_user)):
     with ingestion_lock:
         combined_text = f"Question: {req.question}\nAnswer: {req.answer}"
         manual_hash = parser_service.get_file_hash(combined_text.encode())
@@ -366,7 +367,8 @@ def list_sessions(
     search: Optional[str] = None,
     page: int = 1,
     page_size: int = 20,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user: str = Depends(get_current_user)
 ):
     query = db.query(ChatSession)
     if search:
@@ -388,13 +390,13 @@ def list_sessions(
     return {"total": total, "page": page, "page_size": page_size, "items": results}
 
 @app.get("/sessions/{session_id}", tags=["Admin"])
-def get_session_history(session_id: str, db: Session = Depends(get_db)):
+def get_session_history(session_id: str, db: Session = Depends(get_db), user: str = Depends(get_current_user)):
     return db.query(ChatHistory).filter(ChatHistory.session_id == session_id).order_by(ChatHistory.timestamp).all()
 
 # --- Admin & Management ---
 
 @app.get("/admin/dashboard", tags=["Admin"])
-def admin_dashboard_stats(db: Session = Depends(get_db)):
+def admin_dashboard_stats(db: Session = Depends(get_db), user: str = Depends(get_current_user)):
     doc_count = db.query(Document).filter(Document.is_deleted == False).count()
     chunk_count = db.query(VectorEntry).join(Document).filter(Document.is_deleted == False).count()
     chat_count = db.query(ChatHistory).count()
@@ -410,7 +412,8 @@ def list_documents(
     search: Optional[str] = None, 
     page: int = 1,
     page_size: int = 15,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user: str = Depends(get_current_user)
 ):
     query = db.query(Document).filter(Document.is_deleted == False)
     if category: query = query.filter(Document.category == category)
@@ -426,7 +429,8 @@ def list_trash(
     source_type: Optional[str] = None,
     page: int = 1,
     page_size: int = 15,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user: str = Depends(get_current_user)
 ):
     query = db.query(Document).filter(Document.is_deleted == True)
     if search: query = query.filter(Document.filename.ilike(f"%{search}%"))
@@ -437,7 +441,7 @@ def list_trash(
     return {"total": total, "page": page, "page_size": page_size, "items": items}
 
 @app.post("/admin/restore/{doc_id}", tags=["Admin"])
-def restore_doc(doc_id: int, db: Session = Depends(get_db)):
+def restore_doc(doc_id: int, db: Session = Depends(get_db), user: str = Depends(get_current_user)):
     doc = db.query(Document).filter(Document.id == doc_id).first()
     if not doc: raise HTTPException(status_code=404)
     doc.is_deleted = False
@@ -446,7 +450,7 @@ def restore_doc(doc_id: int, db: Session = Depends(get_db)):
     return {"status": "success"}
 
 @app.delete("/documents/{doc_id}", tags=["Admin"])
-def soft_delete_doc(doc_id: int, db: Session = Depends(get_db)):
+def soft_delete_doc(doc_id: int, db: Session = Depends(get_db), user: str = Depends(get_current_user)):
     doc = db.query(Document).filter(Document.id == doc_id).first()
     if not doc: raise HTTPException(status_code=404)
     doc.is_deleted = True
@@ -455,7 +459,7 @@ def soft_delete_doc(doc_id: int, db: Session = Depends(get_db)):
     return {"status": "success"}
 
 @app.delete("/admin/permanent/{doc_id}", tags=["Admin"])
-def permanent_delete(doc_id: int, db: Session = Depends(get_db)):
+def permanent_delete(doc_id: int, db: Session = Depends(get_db), user: str = Depends(get_current_user)):
     doc = db.query(Document).filter(Document.id == doc_id).first()
     if not doc: raise HTTPException(status_code=404)
     db.delete(doc) # Cascade handles VectorEntry
@@ -463,11 +467,11 @@ def permanent_delete(doc_id: int, db: Session = Depends(get_db)):
     return {"status": "success"}
 
 @app.get("/admin/config", tags=["Admin"])
-def get_config(db: Session = Depends(get_db)):
+def get_config(db: Session = Depends(get_db), user: str = Depends(get_current_user)):
     return {s.key: s.value for s in db.query(AppSettings).all()}
 
 @app.post("/admin/config", tags=["Admin"])
-def update_config(req: ConfigUpdate, db: Session = Depends(get_db)):
+def update_config(req: ConfigUpdate, db: Session = Depends(get_db), user: str = Depends(get_current_user)):
     updates = req.dict(exclude_none=True)
     for k, v in updates.items():
         setting = db.query(AppSettings).filter(AppSettings.key == k).first()
@@ -524,17 +528,7 @@ def login(req: LoginRequest, response: __import__('fastapi').Response, db: Sessi
     }
 
 @app.post("/auth/change-password", tags=["Auth"])
-def change_password(req: PasswordChangeRequest, request: Request, db: Session = Depends(get_db)):
-    # 1. Authenticate user from Token
-    auth = request.headers.get("Authorization", "")
-    if not auth.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    payload = decode_access_token(auth.split(" ")[1])
-    if not payload:
-        raise HTTPException(status_code=401, detail="Invalid or expired token")
-    
-    username = payload.get("sub")
-    
+def change_password(req: PasswordChangeRequest, db: Session = Depends(get_db), username: str = Depends(get_current_user)):
     # 2. Verify current password
     db_hash = db.query(AppSettings).filter(AppSettings.key == "admin_password_hash").first()
     
@@ -584,20 +578,13 @@ def logout(response: __import__('fastapi').Response):
     return {"status": "logged out"}
 
 @app.get("/auth/me", tags=["Auth"])
-def get_me(request: Request):
+def get_me(username: str = Depends(get_current_user)):
     import os
-    auth = request.headers.get("Authorization", "")
-    if not auth.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    payload = decode_access_token(auth.split(" ")[1])
-    if not payload:
-        raise HTTPException(status_code=401, detail="Invalid or expired token")
-    username = payload.get("sub")
     return {"username": username, "display_name": os.getenv("ADMIN_DISPLAY_NAME", username)}
 
 # --- Sessions Delete ---
 @app.delete("/sessions/{session_id}", tags=["Admin"])
-def delete_session(session_id: str, db: Session = Depends(get_db)):
+def delete_session(session_id: str, db: Session = Depends(get_db), user: str = Depends(get_current_user)):
     sess = db.query(ChatSession).filter(ChatSession.id == session_id).first()
     if not sess: raise HTTPException(status_code=404)
     db.delete(sess)
