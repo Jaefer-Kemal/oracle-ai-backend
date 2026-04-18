@@ -170,5 +170,15 @@
       "7fcc7326b08bba959e40050b502d02f53c241f8fbd",
       "7f2c4eff1884f451c4b32da71a846b36c168f656fe"
     ]
+  },
+  {
+    "xsid_script": "static/chunks/a7bdb96d670d7a70.js",
+    "action_script": "https://cdn.grok.com/_next/static/chunks/99e471303a459282.js",
+    "actions": [
+      "7f1793578a4f4f05ad436a69f71e454578ff8aeb92",
+      "7f9b34255837a6a88b86310d1f2b12b55a6d189260",
+      "7fcdfb5e96ab589db6a44e8f43b540f9c7db685991",
+      "7f184dec3601f44fea7e5a76be20f9c9ecce623c11"
+    ]
   }
 ]
