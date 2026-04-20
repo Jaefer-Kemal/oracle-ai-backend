@@ -142,9 +142,23 @@ def init_db():
         
         conn.commit()
     
-    # 4. Pre-populate defaults
+    # 4. Pre-populate defaults and Initialize User
     db = SessionLocal()
     try:
+        # User initialization from .env
+        import os
+        if not db.query(User).first():
+            from auth import get_password_hash
+            default_user = os.getenv("ADMIN_USERNAME", "admin")
+            default_pass = os.getenv("ADMIN_PASSWORD", "admin123")
+            db.add(User(username=default_user, hashed_password=get_password_hash(default_pass)))
+            logger.info("Created default admin user from environment variables.")
+
+        # Cleanup old AppSettings for auth
+        stale_settings = db.query(AppSettings).filter(AppSettings.key.in_(["admin_username", "admin_password", "admin_password_hash"])).all()
+        for s in stale_settings:
+            db.delete(s)
+
         defaults = {
             "greeting_message": "Hello! I am your AI assistant. How can I help you today?",
             "fallback_message": "I'm sorry, I couldn't find specific information about that in my database. Please contact our support team at support@company.com for further assistance.",

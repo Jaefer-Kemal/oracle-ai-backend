@@ -102,7 +102,7 @@ class PasswordChangeRequest(BaseModel):
     new_password: str
 
 class BulkDeleteRequest(BaseModel):
-    ids: List[str]
+    ids: List[__import__('typing').Union[str, int]]
 
 class StandardResponse(BaseModel):
     status: str
@@ -227,7 +227,7 @@ def ingest_manual(req: ManualKnowledgeRequest, db: Session = Depends(get_db), us
         return {"status": "success", "success": True, "message": f"Manual entry '{req.title}' added to knowledge base.", "chunks": 1}
 
 @app.post("/ingest/check", tags=["Ingestion"], summary="Check for similar facts")
-def check_synergy(req: ManualKnowledgeRequest, db: Session = Depends(get_db)):
+def check_synergy(req: ManualKnowledgeRequest, db: Session = Depends(get_db), user: str = Depends(get_current_user)):
     """Check if a similar fact already exists to prevent duplicate ingestion."""
     combined_text = f"Question: {req.question}\nAnswer: {req.answer}"
     query_emb = cohere_service.get_embeddings([combined_text])[0]
@@ -298,30 +298,25 @@ def query_rag(req: QueryRequest, db: Session = Depends(get_db)):
     has_context = len(valid_results) > 0
     has_history = len(history_data) > 0
 
-    if not has_context and not has_history:
-        # Truly empty: no docs found, no conversation history
-        answer = config.get("fallback_message", "I'm sorry, I couldn't find information on that.")
-        mode = "fallback"
-    else:
-        # We have SOMETHING to work with — documents, history, or both
-        context_chunks = [r["content"] for r in sources]
-        try:
-            is_conv = not has_context  # pure conversational if no docs found
-            answer = grok_service.generate_answer(req.input, context_chunks, db, history_data, is_conversational=is_conv)
+    context_chunks = [r["content"] for r in sources] if has_context else []
+    
+    try:
+        is_conv = not has_context  # pure conversational if no docs found
+        answer = grok_service.generate_answer(req.input, context_chunks, db, history_data, is_conversational=is_conv)
 
-            # Strict Output Parsing: Validate against engine failure or safety fallback
-            expected_fallback = config.get("fallback_message", "")
-            if answer.startswith("Error:") or answer.startswith("I am currently experiencing a processing error."):
-                mode = "error"
-            elif expected_fallback and answer.strip() == expected_fallback.strip():
-                mode = "fallback"
-            else:
-                mode = "semantic" if has_context else "conversational"
-                
-        except Exception as e:
-            logger.error(f"Grok Error: {str(e)}")
-            answer = config.get("fallback_message", "I am currently experiencing a processing error. Please retry your query shortly.")
+        # Strict Output Parsing: Validate against engine failure or safety fallback
+        expected_fallback = config.get("fallback_message", "")
+        if answer.startswith("Error:") or answer.startswith("I am currently experiencing a processing error."):
             mode = "error"
+        elif expected_fallback and answer.strip() == expected_fallback.strip():
+            mode = "fallback"
+        else:
+            mode = "semantic" if has_context else "conversational"
+            
+    except Exception as e:
+        logger.error(f"Grok Error: {str(e)}")
+        answer = config.get("fallback_message", "I am currently experiencing a processing error. Please retry your query shortly.")
+        mode = "error"
 
     # Auto-title generation for first message
     if not history_data:
@@ -334,7 +329,7 @@ def query_rag(req: QueryRequest, db: Session = Depends(get_db)):
     follow_ups = []
     if mode in ["semantic", "conversational"]:
         try:
-            follow_ups = grok_service.generate_followups(answer)
+            follow_ups = grok_service.generate_followups(answer, req.input, context_chunks)
         except: pass
 
     # Save History — always store, even if Grok failed, so the session is preserved
@@ -391,6 +386,19 @@ def list_sessions(
 
 @app.get("/sessions/{session_id}", tags=["Admin"])
 def get_session_history(session_id: str, db: Session = Depends(get_db), user: str = Depends(get_current_user)):
+    return db.query(ChatHistory).filter(ChatHistory.session_id == session_id).order_by(ChatHistory.timestamp).all()
+
+@app.get("/public/sessions/{session_id}/history", tags=["Public"])
+def get_public_session_history(session_id: str, db: Session = Depends(get_db)):
+    """Publicly accessible history for guest sessions only."""
+    session = db.query(ChatSession).filter(ChatSession.id == session_id).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    # Security: If it's an internal session, it cannot be accessed without auth
+    if session.is_internal:
+        raise HTTPException(status_code=403, detail="Unauthorized access for internal session")
+        
     return db.query(ChatHistory).filter(ChatHistory.session_id == session_id).order_by(ChatHistory.timestamp).all()
 
 # --- Admin & Management ---
@@ -483,31 +491,12 @@ def update_config(req: ConfigUpdate, db: Session = Depends(get_db), user: str = 
 # --- Auth Endpoints ---
 @app.post("/auth/login", tags=["Auth"])
 def login(req: LoginRequest, response: __import__('fastapi').Response, db: Session = Depends(get_db)):
-    import os
-    # 1. Try to find credentials in Database
-    db_username = db.query(AppSettings).filter(AppSettings.key == "admin_username").first()
-    db_password_hash = db.query(AppSettings).filter(AppSettings.key == "admin_password_hash").first()
-
-    valid_user = None
+    user = db.query(User).filter(User.username == req.username).first()
     
-    if db_username and db_password_hash:
-        # Use DB credentials
-        if req.username == db_username.value and verify_password(req.password, db_password_hash.value):
-            valid_user = req.username
-    else:
-        # 2. Fallback to .env and "Self-Heal" (Migrate to DB)
-        env_user = os.getenv("ADMIN_USERNAME", "admin")
-        env_pass = os.getenv("ADMIN_PASSWORD", "admin123")
-        if req.username == env_user and req.password == env_pass:
-            valid_user = req.username
-            # Auto-migrate to secure DB storage
-            db.add(AppSettings(key="admin_username", value=env_user))
-            db.add(AppSettings(key="admin_password_hash", value=get_password_hash(env_pass)))
-            db.commit()
-
-    if not valid_user:
+    if not user or not verify_password(req.password, user.hashed_password):
         raise HTTPException(status_code=401, detail="Invalid credentials")
     
+    valid_user = user.username
     from auth import ACCESS_TOKEN_EXPIRE_MINUTES, REFRESH_TOKEN_EXPIRE_DAYS
     access_token = create_access_token(data={"sub": valid_user})
     refresh_token = create_refresh_token(data={"sub": valid_user})
@@ -529,32 +518,16 @@ def login(req: LoginRequest, response: __import__('fastapi').Response, db: Sessi
 
 @app.post("/auth/change-password", tags=["Auth"])
 def change_password(req: PasswordChangeRequest, db: Session = Depends(get_db), username: str = Depends(get_current_user)):
-    # 2. Verify current password
-    db_hash = db.query(AppSettings).filter(AppSettings.key == "admin_password_hash").first()
-    
-    # If not in DB yet, check .env
-    current_is_valid = False
-    if db_hash:
-        current_is_valid = verify_password(req.current_password, db_hash.value)
-    else:
-        import os
-        env_pass = os.getenv("ADMIN_PASSWORD", "admin123")
-        current_is_valid = (req.current_password == env_pass)
-        # Migrate username if missing
-        if not db.query(AppSettings).filter(AppSettings.key == "admin_username").first():
-            db.add(AppSettings(key="admin_username", value=os.getenv("ADMIN_USERNAME", "admin")))
-
-    if not current_is_valid:
+    user = db.query(User).filter(User.username == username).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+        
+    if not verify_password(req.current_password, user.hashed_password):
         raise HTTPException(status_code=400, detail="Incorrect current password")
     
-    # 3. Update to new hash
-    new_hash = get_password_hash(req.new_password)
-    if db_hash:
-        db_hash.value = new_hash
-    else:
-        db.add(AppSettings(key="admin_password_hash", value=new_hash))
-    
+    user.hashed_password = get_password_hash(req.new_password)
     db.commit()
+    
     logger.info(f"Password changed successfully for user: {username}")
     return {"status": "success", "message": "Password updated successfully."}
 
@@ -592,14 +565,14 @@ def delete_session(session_id: str, db: Session = Depends(get_db), user: str = D
     return {"status": "success"}
 
 @app.post("/sessions/bulk-delete", tags=["Admin"])
-def bulk_delete_sessions(req: BulkDeleteRequest, db: Session = Depends(get_db)):
+def bulk_delete_sessions(req: BulkDeleteRequest, db: Session = Depends(get_db), user: str = Depends(get_current_user)):
     db.query(ChatSession).filter(ChatSession.id.in_(req.ids)).delete(synchronize_session=False)
     db.commit()
     return {"status": "success", "deleted": len(req.ids)}
 
 # --- Bulk Document Delete ---
 @app.post("/documents/bulk-delete", tags=["Admin"])
-def bulk_delete_documents(req: BulkDeleteRequest, db: Session = Depends(get_db)):
+def bulk_delete_documents(req: BulkDeleteRequest, db: Session = Depends(get_db), user: str = Depends(get_current_user)):
     now = datetime.utcnow()
     db.query(Document).filter(Document.id.in_(req.ids)).update(
         {"is_deleted": True, "deleted_at": now}, synchronize_session=False
