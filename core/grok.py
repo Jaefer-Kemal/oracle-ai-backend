@@ -297,7 +297,9 @@ class Grok:
                     if 'rejected by anti-bot rules' in convo_request.text:
                         continue # Retry
                     elif "Grok is under heavy usage right now" in convo_request.text:
-                        return {"error": "Grok is overloaded."}
+                        Log.Error("Grok is overloaded. Retrying after delay...")
+                        import time; time.sleep(3)
+                        continue # Retry
                         
                     if attempt == max_retries - 1:
                         return {"error": convo_request.text}
