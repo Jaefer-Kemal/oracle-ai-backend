@@ -277,9 +277,11 @@ class Grok:
                 if not response and stream_response:
                     response = "".join(stream_response)
                 
-                return {
-                    "response": response,
-                    "stream_response": stream_response,
+                # If we successfully parsed a response or tokens, return them
+                if response or stream_response:
+                    return {
+                        "response": response,
+                        "stream_response": stream_response,
                         "images": image_urls,
                         "extra_data": {
                             "anon_user": self.anon_user,
@@ -293,16 +295,20 @@ class Grok:
                             "privateKey": self.keys["privateKey"]
                         }
                     }
-                else:
-                    if 'rejected by anti-bot rules' in convo_request.text:
-                        continue # Retry
-                    elif "Grok is under heavy usage right now" in convo_request.text:
-                        Log.Error("Grok is overloaded. Retrying after delay...")
-                        import time; time.sleep(3)
-                        continue # Retry
-                        
-                    if attempt == max_retries - 1:
-                        return {"error": convo_request.text}
+                
+                # If no response was found, check for specific "retryable" errors in the raw text
+                if 'rejected by anti-bot rules' in convo_request.text:
+                    Log.Error("Anti-bot rejection. Retrying...")
+                    continue
+                elif "Grok is under heavy usage right now" in convo_request.text:
+                    Log.Error("Grok is overloaded. Retrying after delay...")
+                    import time; time.sleep(3)
+                    continue
+
+                # Final fallback for error reporting
+                if attempt == max_retries - 1:
+                    return {"error": convo_request.text or f"Empty response with status {convo_request.status_code}"}
+
             except Exception as e:
                 if attempt == max_retries - 1:
                     return {"error": str(e)}
