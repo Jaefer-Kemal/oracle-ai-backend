@@ -221,46 +221,65 @@ class Grok:
 
                     convo_request: requests.models.Response = self.session.post(f'https://grok.com/rest/app-chat/conversations/{extra_data["conversationId"]}/responses', json=conversation_data, timeout=9999)
 
-                if "modelResponse" in convo_request.text:
-                    response = conversation_id = parent_response = image_urls = None
-                    stream_response: list = []
+                # Check if the status code indicates an error or if the response is valid
+                if convo_request.status_code != 200:
+                    return {"error": f"API Error {convo_request.status_code}: {convo_request.text}"}
+
+                response = conversation_id = parent_response = image_urls = None
+                stream_response: list = []
+                
+                # Split by newline and handle potential prefixes (like 0:{"..."})
+                splits = convo_request.text.strip().split('\n')
+                for line in splits:
+                    try:
+                        # Find the first '{' to strip prefixes like '0:' or '1:'
+                        json_start = line.find('{')
+                        if json_start != -1:
+                            line = line[json_start:]
+                        
+                        data: dict = loads(line)
+                    except Exception as e:
+                        continue
+
+                    # Targeted Extraction (Priority Path)
+                    res = data.get('result', {})
                     
-                    splits = convo_request.text.strip().split('\n')
-                    for response_dict in splits:  
-                        try:
-                            data: dict = loads(response_dict)
-                        except: continue
+                    # 1. Capture IDs & Meta
+                    cid = res.get('conversation', {}).get('conversationId')
+                    if cid: conversation_id = cid
 
-                        # Targeted Extraction (Priority Path)
-                        res = data.get('result', {})
+                    # 2. Capture Response Details (Direct or Nested)
+                    # Use a broad set of keys to catch variations (modelResponse, message, text)
+                    m_resp = res.get('response', {}).get('modelResponse') or res.get('modelResponse') or res
+                    
+                    if m_resp:
+                        # Look for content in various possible keys
+                        msg = m_resp.get('message') or m_resp.get('text')
                         
-                        # 1. Capture IDs & Meta
-                        cid = res.get('conversation', {}).get('conversationId')
-                        if cid: conversation_id = cid
-
-                        # 2. Capture Response Details (Direct or Nested)
-                        # We prioritize modelResponse data that IS NOT an echo of our message
-                        m_resp = res.get('response', {}).get('modelResponse') or res.get('modelResponse')
-                        
-                        if m_resp:
-                            msg = m_resp.get('message')
-                            # Echo Prevention: Skip if the message is identical to our prompt (Echo)
-                            if msg and isinstance(msg, str) and msg.strip() != message.strip():
+                        # Echo Prevention: Skip if the message is identical to our prompt (Echo)
+                        # AI responses are usually much shorter than the full system prompt
+                        if msg and isinstance(msg, str) and msg.strip() != message.strip():
+                            # We only set response if it's the longest one we've seen (some chunks are partial)
+                            if not response or len(msg) > len(response):
                                 response = msg
-                            
-                            rid = m_resp.get('responseId')
-                            if rid: parent_response = rid
-                            
-                            urls = m_resp.get('generatedImageUrls')
-                            if urls: image_urls = urls
+                        
+                        rid = m_resp.get('responseId')
+                        if rid: parent_response = rid
+                        
+                        urls = m_resp.get('generatedImageUrls')
+                        if urls: image_urls = urls
 
-                        # 3. Stream Tokens
-                        token = res.get('response', {}).get('token') or res.get('token')
-                        if token: stream_response.append(token)
-                    
-                    return {
-                        "response": response,
-                        "stream_response": stream_response,
+                    # 3. Stream Tokens (Incremental tokens)
+                    token = res.get('response', {}).get('token') or res.get('token')
+                    if token: stream_response.append(token)
+                
+                # FINAL FALLBACK: If 'response' is still None, but we have tokens, join them.
+                if not response and stream_response:
+                    response = "".join(stream_response)
+                
+                return {
+                    "response": response,
+                    "stream_response": stream_response,
                         "images": image_urls,
                         "extra_data": {
                             "anon_user": self.anon_user,
