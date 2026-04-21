@@ -3,7 +3,7 @@ from typing import List, Optional
 from sqlalchemy.orm import Session
 from .grok import Grok
 from .gemini import GeminiProvider
-# g4f integration would go here
+from .g4f_provider import G4FProvider
 
 logger = logging.getLogger("rag-backend")
 
@@ -33,14 +33,19 @@ class ProviderFactory:
             fallback_chain.remove(active_provider)
         fallback_chain.insert(0, active_provider)
 
+        print(f"DEBUG: Active Provider: {active_provider}")
+        print(f"DEBUG: Fallback Chain: {fallback_chain}")
+        
         # 2. Iterate through providers
         last_error = None
         for provider_name in fallback_chain:
             try:
+                print(f"DEBUG: Attempting provider: {provider_name}")
                 logger.info(f"Attempting generation with provider: {provider_name}")
                 result = ProviderFactory._call_provider(db, provider_name, prompt)
                 
                 if result and "error" not in result:
+                    print(f"DEBUG: Provider {provider_name} SUCCEEDED")
                     return result
                 
                 last_error = result.get("error", "Unknown error")
@@ -71,6 +76,10 @@ class ProviderFactory:
             client = GeminiProvider(psid.value, ts.value)
             return client.generate_answer(prompt)
             
-        # Add g4f or others here...
+        elif name == "g4f":
+            client = G4FProvider()
+            return client.generate_answer(prompt)
+            
+        # Add others here...
         
         return {"error": f"Provider {name} not implemented."}

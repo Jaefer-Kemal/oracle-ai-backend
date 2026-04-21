@@ -31,7 +31,7 @@ class Grok:
     
     
     def __init__(self, model: str = "grok-3-auto", proxy: str = None) -> None:
-        self.session: requests.session.Session = requests.Session(impersonate="chrome120", default_headers=False)
+        self.session: requests.session.Session = requests.Session(impersonate="chrome", default_headers=False)
         self.headers: Headers = Headers()
         
         # Validation: Ensure the model exists in the supported list, otherwise fallback to auto

@@ -165,7 +165,7 @@ def init_db():
             "similarity_threshold": "0.5",
             "grok_model": "grok-3-auto",
             "active_provider": "grok",
-            "fallback_chain": '["grok", "gemini"]',
+            "fallback_chain": '["grok", "gemini", "g4f"]',
             "gemini_1psid": "",
             "gemini_1psidts": "",
             "suggested_questions": '["What topics are covered in the knowledge base?", "How can I contact support?", "What are your business hours?", "How do I get started?", "What services do you offer?"]'
