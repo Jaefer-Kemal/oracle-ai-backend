@@ -1,59 +1,67 @@
-import asyncio
+import os
 import logging
-from typing import Optional, List, Union
-from pathlib import Path
-from gemini_webapi import GeminiClient as WebGeminiClient
+from google import genai
+from typing import Optional, List, Dict, Any
 
-logger = logging.getLogger("rag-backend")
+logger = logging.getLogger("rag-backend.gemini")
 
 class GeminiProvider:
     """
-    Modular Gemini Provider for Oracle AI.
-    Handles session initialization and content generation.
+    Official Google Gemini API Provider (v2).
+    Uses the modern 'google-genai' SDK.
     """
-    def __init__(self, secure_1psid: str, secure_1psidts: str, proxy: str | None = None) -> None:
-        self.secure_1psid = secure_1psid
-        self.secure_1psidts = secure_1psidts
-        self.proxy = proxy
+    def __init__(self, api_key: Optional[str] = None) -> None:
+        # Prioritize passed key, then .env
+        self.api_key = api_key or os.getenv("GOOGLE_API_KEY")
         self._client = None
+        
+        if not self.api_key:
+            logger.warning("Gemini API Key missing. Service will be unavailable.")
+        else:
+            try:
+                # Initialize the new SDK client
+                self._client = genai.Client(api_key=self.api_key)
+                logger.info("Gemini SDK initialized successfully.")
+            except Exception as e:
+                logger.error(f"Failed to initialize Gemini SDK: {e}")
+                self._client = None
 
-    async def _get_client(self):
+    def generate_answer(self, prompt: str, model: str = "gemini-2.0-flash") -> Dict[str, Any]:
+        """
+        Generates a response using the modern google-genai SDK.
+        """
         if not self._client:
-            self._client = WebGeminiClient(self.secure_1psid, self.secure_1psidts, self.proxy)
-            await self._client.init()
-        return self._client
+            return {"error": "Gemini API Client not initialized (check API Key)."}
 
-    async def generate_answer_async(self, prompt: str, model: str = "gemini-2.5-flash") -> dict:
-        """
-        Async implementation of the answer generation.
-        """
         try:
-            client = await self._get_client()
-            response = await client.generate_content(prompt, model=model)
+            # Using generate_content from the new SDK
+            response = self._client.models.generate_content(
+                model=model,
+                contents=prompt
+            )
+            
+            # Extract text (handling potential candidates)
+            text = response.text if response.text else ""
             
             return {
-                "response": response.text,
-                "stream_response": [], # gemini-webapi handles stream internally or returns full text
-                "images": getattr(response, 'images', []),
+                "response": text,
+                "stream_response": [],
+                "images": [], 
                 "metadata": {
                     "provider": "gemini",
-                    "model": model
+                    "model": model,
+                    "usage": {
+                        "prompt_token_count": getattr(response.usage_metadata, 'prompt_token_count', 0),
+                        "candidates_token_count": getattr(response.usage_metadata, 'candidates_token_count', 0),
+                        "total_token_count": getattr(response.usage_metadata, 'total_token_count', 0)
+                    }
                 }
             }
         except Exception as e:
-            logger.error(f"Gemini Provider Error: {e}")
+            logger.error(f"Gemini SDK Error: {e}")
             return {"error": str(e)}
 
-    def generate_answer(self, prompt: str, model: str = "gemini-2.5-flash") -> dict:
-        """
-        Synchronous wrapper for integration with existing services.
-        """
-        try:
-            return asyncio.run(self.generate_answer_async(prompt, model))
-        except Exception as e:
-            return {"error": f"Async Bridge Error: {e}"}
-
-    async def close(self) -> None:
-        if self._client:
-            await self._client.close()
-            self._client = None
+    # Compatibility method for async calling
+    async def generate_answer_async(self, prompt: str, model: str = "gemini-2.0-flash") -> Dict[str, Any]:
+        # The new SDK is sync by default but supports direct calling 
+        return self.generate_answer(prompt, model)

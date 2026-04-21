@@ -122,6 +122,10 @@ def init_db():
             conn.execute(text("ALTER TABLE chat_sessions ADD COLUMN is_internal BOOLEAN DEFAULT FALSE"))
             print("Migration: Added is_internal to chat_sessions")
         
+        # Cleanup legacy Gemini cookies
+        conn.execute(text("DELETE FROM app_settings WHERE key IN ('gemini_1psid', 'gemini_1psidts')"))
+        print("Migration: Purged legacy Gemini cookies")
+        
         # Check vector dimension — must match the current embedding model
         # embed-v4.0 = 1536 dims. If the column is wrong size, clear and recreate.
         try:
@@ -166,8 +170,6 @@ def init_db():
             "grok_model": "grok-3-auto",
             "active_provider": "grok",
             "fallback_chain": '["grok", "gemini", "g4f"]',
-            "gemini_1psid": "",
-            "gemini_1psidts": "",
             "suggested_questions": '["What topics are covered in the knowledge base?", "How can I contact support?", "What are your business hours?", "How do I get started?", "What services do you offer?"]'
         }
         for k, v in defaults.items():

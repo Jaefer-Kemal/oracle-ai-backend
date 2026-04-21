@@ -67,13 +67,8 @@ class ProviderFactory:
             return client.start_convo(prompt)
             
         elif name == "gemini":
-            psid = db.query(AppSettings).filter(AppSettings.key == "gemini_1psid").first()
-            ts = db.query(AppSettings).filter(AppSettings.key == "gemini_1psidts").first()
-            
-            if not psid or not ts or not psid.value:
-                return {"error": "Gemini cookies not configured in Admin Settings."}
-                
-            client = GeminiProvider(psid.value, ts.value)
+            # Gemini now uses the official API via GOOGLE_API_KEY in .env
+            client = GeminiProvider()
             return client.generate_answer(prompt)
             
         elif name == "g4f":

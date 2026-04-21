@@ -25,12 +25,11 @@ colorama = "^0.4.6"
 python-jose = {extras = ["cryptography"], version = "^3.5.0"}
 passlib = {extras = ["recommended"], version = "^1.7.4"}
 bcrypt = "^5.0.0"
-browser-cookie3 = ">=0.20.1"
-gemini-webapi = ">=1.8.3"
 g4f = ">=0.4.1.2"
 platformdirs = "^4.3.8"
 pywin32 = { version = "==308", platform = "win32" }
 pycryptodomex = { version = ">=3.21.0", platform = "win32" }
+google-genai = "^1.73.1"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^7.4.0"

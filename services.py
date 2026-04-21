@@ -8,6 +8,7 @@ from docx import Document as DocxDocument
 from dotenv import load_dotenv
 
 from core.providers.factory import ProviderFactory
+from core.providers.grok import Grok, _Models
 import logging
 from sqlalchemy.orm import Session
 
@@ -60,7 +61,6 @@ class GrokService:
 
     def _get_model(self, db: Session) -> str:
         from models import AppSettings
-        from core.grok import _Models
         
         setting = db.query(AppSettings).filter(AppSettings.key == "grok_model").first()
         requested_model = setting.value if setting else "grok-3-auto"
