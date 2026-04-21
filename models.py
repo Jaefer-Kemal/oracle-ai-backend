@@ -164,6 +164,10 @@ def init_db():
             "fallback_message": "I'm sorry, I couldn't find specific information about that in my database. Please contact our support team at support@company.com for further assistance.",
             "similarity_threshold": "0.5",
             "grok_model": "grok-3-auto",
+            "active_provider": "grok",
+            "fallback_chain": '["grok", "gemini"]',
+            "gemini_1psid": "",
+            "gemini_1psidts": "",
             "suggested_questions": '["What topics are covered in the knowledge base?", "How can I contact support?", "What are your business hours?", "How do I get started?", "What services do you offer?"]'
         }
         for k, v in defaults.items():

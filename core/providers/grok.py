@@ -1,5 +1,11 @@
-from core        import Log, Run, Utils, Parser, Signature, Anon, Headers
+from ..utils.logger import Log
+from ..utils.runtime import Utils
+from ..utils.headers import Headers
+from ..reverse.parser import Parser
+from ..reverse.xctid  import Signature
+from ..reverse.anon   import Anon
 from curl_cffi   import requests, CurlMime
+import logging
 from dataclasses import dataclass, field
 from bs4         import BeautifulSoup
 from json        import dumps, loads
@@ -19,6 +25,7 @@ class Models:
         return self.models.get(model, ["MODEL_MODE_AUTO", "auto"])[index]
 
 _Models = Models()
+logger = logging.getLogger("rag-backend.grok")
 
 class Grok:
     
@@ -221,9 +228,13 @@ class Grok:
 
                     convo_request: requests.models.Response = self.session.post(f'https://grok.com/rest/app-chat/conversations/{extra_data["conversationId"]}/responses', json=conversation_data, timeout=9999)
 
-                # Check if the status code indicates an error or if the response is valid
+                # Check if the status code indicates an error
                 if convo_request.status_code != 200:
-                    return {"error": f"API Error {convo_request.status_code}: {convo_request.text}"}
+                    # If it's a 429 (Overloaded), don't return yet; let it drop to the handled retry logic below
+                    if convo_request.status_code == 429:
+                        logger.warning("Grok returned 429 (Overloaded). Moving to retry logic.")
+                    else:
+                        return {"error": f"API Error {convo_request.status_code}: {convo_request.text}"}
 
                 response = conversation_id = parent_response = image_urls = None
                 stream_response: list = []

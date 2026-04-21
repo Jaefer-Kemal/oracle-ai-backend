@@ -1,7 +1,7 @@
-from .logger         import Log
-from .runtime        import Run, Utils
-from .headers        import Headers
+from .utils.logger  import Log
+from .utils.runtime import Run, Utils
+from .utils.headers import Headers
 from .reverse.parser import Parser
 from .reverse.xctid  import Signature
 from .reverse.anon   import Anon
-from .grok           import Grok
+from .providers.grok import Grok

@@ -1,0 +1,76 @@
+import logging
+from typing import List, Optional
+from sqlalchemy.orm import Session
+from .grok import Grok
+from .gemini import GeminiProvider
+# g4f integration would go here
+
+logger = logging.getLogger("rag-backend")
+
+class ProviderFactory:
+    """
+    Orchestrates multiple AI providers with dynamic fallback logic.
+    """
+    @staticmethod
+    def generate_answer(db: Session, prompt: str, history: List[dict] = None) -> dict:
+        from models import AppSettings
+        
+        # 1. Fetch Configuration
+        active_provider_setting = db.query(AppSettings).filter(AppSettings.key == "active_provider").first()
+        fallback_chain_setting = db.query(AppSettings).filter(AppSettings.key == "fallback_chain").first()
+        
+        active_provider = active_provider_setting.value if active_provider_setting else "grok"
+        
+        # Fallback chain is stored as a JSON string or comma-separated list
+        try:
+            import json
+            fallback_chain = json.loads(fallback_chain_setting.value) if fallback_chain_setting else ["grok", "gemini"]
+        except:
+            fallback_chain = ["grok", "gemini"]
+
+        # Ensure active_provider is first in the execution list if not already
+        if active_provider in fallback_chain:
+            fallback_chain.remove(active_provider)
+        fallback_chain.insert(0, active_provider)
+
+        # 2. Iterate through providers
+        last_error = None
+        for provider_name in fallback_chain:
+            try:
+                logger.info(f"Attempting generation with provider: {provider_name}")
+                result = ProviderFactory._call_provider(db, provider_name, prompt)
+                
+                if result and "error" not in result:
+                    return result
+                
+                last_error = result.get("error", "Unknown error")
+                logger.warning(f"Provider {provider_name} failed: {last_error}")
+            except Exception as e:
+                last_error = str(e)
+                logger.error(f"Critical failure in provider {provider_name}: {e}")
+
+        return {"error": f"All providers failed. Last error: {last_error}"}
+
+    @staticmethod
+    def _call_provider(db: Session, name: str, prompt: str) -> dict:
+        from models import AppSettings
+        
+        if name == "grok":
+            model_setting = db.query(AppSettings).filter(AppSettings.key == "grok_model").first()
+            model = model_setting.value if model_setting else "grok-3-auto"
+            client = Grok(model)
+            return client.start_convo(prompt)
+            
+        elif name == "gemini":
+            psid = db.query(AppSettings).filter(AppSettings.key == "gemini_1psid").first()
+            ts = db.query(AppSettings).filter(AppSettings.key == "gemini_1psidts").first()
+            
+            if not psid or not ts or not psid.value:
+                return {"error": "Gemini cookies not configured in Admin Settings."}
+                
+            client = GeminiProvider(psid.value, ts.value)
+            return client.generate_answer(prompt)
+            
+        # Add g4f or others here...
+        
+        return {"error": f"Provider {name} not implemented."}

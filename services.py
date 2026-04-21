@@ -7,7 +7,7 @@ from pypdf import PdfReader
 from docx import Document as DocxDocument
 from dotenv import load_dotenv
 
-from core import Grok
+from core.providers.factory import ProviderFactory
 import logging
 from sqlalchemy.orm import Session
 
@@ -203,19 +203,18 @@ Analyze the user query and the <retrieved_context>. Deliver your response strict
 User Query: {query}
 </execution>"""
         
-            response = grok_client.start_convo(prompt)
-            # DEBUG: Log response keys to identify structure issues
-            logger.info(f"Grok Response Keys: {list(response.keys()) if isinstance(response, dict) else 'Not a dict'}")
-            if "error" in response:
-                logger.error(f"Grok Engine Error: {response['error']}")
-                return f"Sorry, I encountered an engine error: {response['error']}"
+            # Modular Provider Generation with Fallback
+            response = ProviderFactory.generate_answer(db, prompt, history)
             
-            # If full response is missing but tokens are present, join tokens
+            # DEBUG: Log response keys to identify structure issues
+            logger.info(f"AI Response Keys: {list(response.keys()) if isinstance(response, dict) else 'Not a dict'}")
+            
+            if "error" in response:
+                logger.error(f"Provider Failure (All fallbacks exhausted): {response['error']}")
+                fb_msg = db.query(AppSettings).filter(AppSettings.key == "fallback_message").first()
+                return fb_msg.value if fb_msg else "I'm sorry, I'm having trouble connecting to my knowledge base right now. Please try again in a moment."
+            
             final_text = response.get("response")
-            if not final_text and response.get("stream_response"):
-                final_text = "".join(response["stream_response"])
-                logger.info("Falling back to stream_response tokens.")
-
             return final_text or "Error: No response from generation engine."
         except Exception as e:
             logger.error(f"Grok Generate Answer Error: {e}")

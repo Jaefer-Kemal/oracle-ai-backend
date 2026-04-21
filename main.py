@@ -92,6 +92,10 @@ class ConfigUpdate(BaseModel):
     similarity_threshold: Optional[str] = None
     suggested_questions: Optional[str] = None
     grok_model: Optional[str] = None
+    active_provider: Optional[str] = None
+    fallback_chain: Optional[str] = None
+    gemini_1psid: Optional[str] = None
+    gemini_1psidts: Optional[str] = None
 
 class LoginRequest(BaseModel):
     username: str
