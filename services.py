@@ -204,7 +204,19 @@ User Query: {query}
 </execution>"""
         
             response = grok_client.start_convo(prompt)
-            return response.get("response", "Error: No response from generation engine.")
+            # DEBUG: Log response keys to identify structure issues
+            logger.info(f"Grok Response Keys: {list(response.keys()) if isinstance(response, dict) else 'Not a dict'}")
+            if "error" in response:
+                logger.error(f"Grok Engine Error: {response['error']}")
+                return f"Sorry, I encountered an engine error: {response['error']}"
+            
+            # If full response is missing but tokens are present, join tokens
+            final_text = response.get("response")
+            if not final_text and response.get("stream_response"):
+                final_text = "".join(response["stream_response"])
+                logger.info("Falling back to stream_response tokens.")
+
+            return final_text or "Error: No response from generation engine."
         except Exception as e:
             logger.error(f"Grok Generate Answer Error: {e}")
             # Dynamic Fallback from DB
