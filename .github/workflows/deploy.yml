@@ -60,3 +60,4 @@ jobs:
             ADMIN_DISPLAY_NAME=ADMIN_DISPLAY_NAME:latest
             JWT_SECRET=JWT_SECRET:latest
             JWT_REFRESH_SECRET=JWT_REFRESH_SECRET:latest
+            GOOGLE_API_KEY=GOOGLE_API_KEY:latest
