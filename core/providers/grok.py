@@ -123,7 +123,7 @@ class Grok:
             self.c_run += 1
         
     
-    def start_convo(self, message: str, extra_data: dict = None) -> dict:
+    def start_convo(self, message: str, extra_data: dict = None, model_override: str = None) -> dict:
         
         if not extra_data:
             self._load()
@@ -150,182 +150,186 @@ class Grok:
         })
         self.session.headers = Headers.fix_order(self.session.headers, self.headers.CONVERSATION)
         
-        # Retry logic for conversation initiation
-        max_retries = 3
-        for attempt in range(max_retries):
-            try:
-                if not extra_data:
-                    conversation_data: dict = {
-                        'temporary': False,
-                        'modelName': self.model,
-                        'message': message,
-                        'fileAttachments': [],
-                        'imageAttachments': [],
-                        'disableSearch': False,
-                        'enableImageGeneration': True,
-                        'returnImageBytes': False,
-                        'returnRawGrokInXaiRequest': False,
-                        'enableImageStreaming': True,
-                        'imageGenerationCount': 2,
-                        'forceConcise': False,
-                        'toolOverrides': {},
-                        'enableSideBySide': True,
-                        'sendFinalMetadata': True,
-                        'isReasoning': False,
-                        'webpageUrls': [],
-                        'disableTextFollowUps': False,
-                        'responseMetadata': {
-                            'requestModelDetails': {
-                                'modelId': self.model,
-                            },
+        # Apply model overrides if provided
+        active_model = self.model
+        active_mode = self.model_mode
+        active_short_mode = self.mode
+
+        if model_override:
+            # Simple mapping for overrides
+            if "lite" in model_override.lower() or "fast" in model_override.lower():
+                active_model = "grok-3-fast"
+            elif "expert" in model_override.lower() or "pro" in model_override.lower():
+                active_model = "grok-4"
+            else:
+                # Default to current if unknown
+                pass
+            
+            # Re-fetch modes for the overridden model
+            from .grok import _Models
+            active_mode = _Models.get_model_mode(active_model, 0)
+            active_short_mode = _Models.get_model_mode(active_model, 1)
+
+        # No longer retrying (Zero-Retry Failover for speed)
+        try:
+            if not extra_data:
+                conversation_data: dict = {
+                    'temporary': False,
+                    'modelName': active_model,
+                    'message': message,
+                    'fileAttachments': [],
+                    'imageAttachments': [],
+                    'disableSearch': False,
+                    'enableImageGeneration': True,
+                    'returnImageBytes': False,
+                    'returnRawGrokInXaiRequest': False,
+                    'enableImageStreaming': True,
+                    'imageGenerationCount': 2,
+                    'forceConcise': False,
+                    'toolOverrides': {},
+                    'enableSideBySide': True,
+                    'sendFinalMetadata': True,
+                    'isReasoning': False,
+                    'webpageUrls': [],
+                    'disableTextFollowUps': False,
+                    'responseMetadata': {
+                        'requestModelDetails': {
+                            'modelId': active_model,
                         },
-                        'disableMemory': False,
-                        'forceSideBySide': False,
-                        'modelMode': self.model_mode,
-                        'isAsyncChat': False,
-                    }
-                    
-                    convo_request: requests.models.Response = self.session.post('https://grok.com/rest/app-chat/conversations/new', json=conversation_data, timeout=9999)
-                else:
-                    conversation_data: dict = {
-                        'message': message,
-                        'modelName': self.model,
-                        'parentResponseId': extra_data["parentResponseId"],
-                        'disableSearch': False,
-                        'enableImageGeneration': True,
-                        'imageAttachments': [],
-                        'returnImageBytes': False,
-                        'returnRawGrokInXaiRequest': False,
-                        'fileAttachments': [],
-                        'enableImageStreaming': True,
-                        'imageGenerationCount': 2,
-                        'forceConcise': False,
-                        'toolOverrides': {},
-                        'enableSideBySide': True,
-                        'sendFinalMetadata': True,
-                        'customPersonality': '',
-                        'isReasoning': False,
-                        'webpageUrls': [],
-                        'metadata': {
-                            'requestModelDetails': {
-                                'modelId': self.model,
-                            },
-                            'request_metadata': {
-                                'model': self.model,
-                                'mode': self.mode,
-                            },
+                    },
+                    'disableMemory': False,
+                    'forceSideBySide': False,
+                    'modelMode': active_mode,
+                    'isAsyncChat': False,
+                }
+                
+                convo_request: requests.models.Response = self.session.post('https://grok.com/rest/app-chat/conversations/new', json=conversation_data, timeout=9999)
+            else:
+                conversation_data: dict = {
+                    'message': message,
+                    'modelName': active_model,
+                    'parentResponseId': extra_data["parentResponseId"],
+                    'disableSearch': False,
+                    'enableImageGeneration': True,
+                    'imageAttachments': [],
+                    'returnImageBytes': False,
+                    'returnRawGrokInXaiRequest': False,
+                    'fileAttachments': [],
+                    'enableImageStreaming': True,
+                    'imageGenerationCount': 2,
+                    'forceConcise': False,
+                    'toolOverrides': {},
+                    'enableSideBySide': True,
+                    'sendFinalMetadata': True,
+                    'customPersonality': '',
+                    'isReasoning': False,
+                    'webpageUrls': [],
+                    'metadata': {
+                        'requestModelDetails': {
+                            'modelId': active_model,
                         },
-                        'disableTextFollowUps': False,
-                        'disableArtifact': False,
-                        'isFromGrokFiles': False,
-                        'disableMemory': False,
-                        'forceSideBySide': False,
-                        'modelMode': self.model_mode,
-                        'isAsyncChat': False,
-                        'skipCancelCurrentInflightRequests': False,
-                        'isRegenRequest': False,
-                    }
+                        'request_metadata': {
+                            'model': active_model,
+                            'mode': active_short_mode,
+                        },
+                    },
+                    'disableTextFollowUps': False,
+                    'disableArtifact': False,
+                    'isFromGrokFiles': False,
+                    'disableMemory': False,
+                    'forceSideBySide': False,
+                    'modelMode': active_mode,
+                    'isAsyncChat': False,
+                    'skipCancelCurrentInflightRequests': False,
+                    'isRegenRequest': False,
+                }
 
-                    convo_request: requests.models.Response = self.session.post(f'https://grok.com/rest/app-chat/conversations/{extra_data["conversationId"]}/responses', json=conversation_data, timeout=9999)
-
-                # Check if the status code indicates an error
-                if convo_request.status_code != 200:
-                    # If it's a 429 (Overloaded), don't return yet; let it drop to the handled retry logic below
-                    if convo_request.status_code == 429:
-                        logger.warning("Grok returned 429 (Overloaded). Moving to retry logic.")
-                    else:
-                        return {"error": f"API Error {convo_request.status_code}: {convo_request.text}"}
-
-                response = conversation_id = parent_response = image_urls = None
-                stream_response: list = []
-                
-                # Split by newline and handle potential prefixes (like 0:{"..."})
-                splits = convo_request.text.strip().split('\n')
-                for line in splits:
-                    try:
-                        # Find the first '{' to strip prefixes like '0:' or '1:'
-                        json_start = line.find('{')
-                        if json_start != -1:
-                            line = line[json_start:]
-                        
-                        data: dict = loads(line)
-                    except Exception as e:
-                        continue
-
-                    # Targeted Extraction (Priority Path)
-                    res = data.get('result', {})
-                    
-                    # 1. Capture IDs & Meta
-                    cid = res.get('conversation', {}).get('conversationId')
-                    if cid: conversation_id = cid
-
-                    # 2. Capture Response Details (Direct or Nested)
-                    # Use a broad set of keys to catch variations (modelResponse, message, text)
-                    m_resp = res.get('response', {}).get('modelResponse') or res.get('modelResponse') or res
-                    
-                    if m_resp:
-                        # Look for content in various possible keys
-                        msg = m_resp.get('message') or m_resp.get('text')
-                        
-                        # Echo Prevention: Skip if the message is identical to our prompt (Echo)
-                        # AI responses are usually much shorter than the full system prompt
-                        if msg and isinstance(msg, str) and msg.strip() != message.strip():
-                            # We only set response if it's the longest one we've seen (some chunks are partial)
-                            if not response or len(msg) > len(response):
-                                response = msg
-                        
-                        rid = m_resp.get('responseId')
-                        if rid: parent_response = rid
-                        
-                        urls = m_resp.get('generatedImageUrls')
-                        if urls: image_urls = urls
-
-                    # 3. Stream Tokens (Incremental tokens)
-                    token = res.get('response', {}).get('token') or res.get('token')
-                    if token: stream_response.append(token)
-                
-                # FINAL FALLBACK: If 'response' is still None, but we have tokens, join them.
-                if not response and stream_response:
-                    response = "".join(stream_response)
-                
-                # If we successfully parsed a response or tokens, return them
-                if response or stream_response:
-                    return {
-                        "response": response,
-                        "stream_response": stream_response,
-                        "images": image_urls,
-                        "extra_data": {
-                            "anon_user": self.anon_user,
-                            "cookies": self.session.cookies.get_dict(),
-                            "actions": self.actions,
-                            "xsid_script": self.xsid_script,
-                            "baggage": self.baggage,
-                            "sentry_trace": self.sentry_trace,
-                            "conversationId": conversation_id or (extra_data.get("conversationId") if extra_data else None),
-                            "parentResponseId": parent_response,
-                            "privateKey": self.keys["privateKey"]
-                        }
-                    }
-                
-                # If no response was found, check for specific "retryable" errors in the raw text
+                # Failover if status is not 200 (including 429 Overloaded)
+            if convo_request.status_code != 200:
+                reason = "Overloaded" if convo_request.status_code == 429 else f"Error {convo_request.status_code}"
+                logger.warning(f"Grok returned {reason}. Moving to failover.")
                 if 'rejected by anti-bot rules' in convo_request.text:
-                    Log.Error("Anti-bot rejection. Retrying...")
-                    continue
-                elif "Grok is under heavy usage right now" in convo_request.text:
-                    Log.Error("Grok is overloaded. Retrying after delay...")
-                    import time; time.sleep(3)
+                    return {"error": "Anti-bot rejection. Please try again later."}
+                return {"error": f"Grok {reason}: {convo_request.text}"}
+
+            # Initialization for parsing
+            response = conversation_id = parent_response = image_urls = None
+            stream_response: list = []
+            
+            # Split by newline and handle potential prefixes (like 0:{"..."})
+            splits = convo_request.text.strip().split('\n')
+            for line in splits:
+                data = {}
+                try:
+                    # Find the first '{' to strip prefixes like '0:' or '1:'
+                    json_start = line.find('{')
+                    if json_start != -1:
+                        l_json = line[json_start:]
+                    else:
+                        l_json = line
+                    
+                    data = loads(l_json)
+                except Exception as e:
                     continue
 
-                # Final fallback for error reporting
-                if attempt == max_retries - 1:
-                    return {"error": convo_request.text or f"Empty response with status {convo_request.status_code}"}
+                # Targeted Extraction (Priority Path)
+                res = data.get('result', {})
+                
+                # 1. Capture IDs & Meta
+                cid = res.get('conversation', {}).get('conversationId')
+                if cid: conversation_id = cid
 
-            except Exception as e:
-                if attempt == max_retries - 1:
-                    return {"error": str(e)}
-                Log.Error(f"Grok request flake: {e}. Retrying...")
-                import time; time.sleep(2)
-        
-        return {"error": "Max retries exceeded"}
+                # 2. Capture Response Details (Direct or Nested)
+                # Use a broad set of keys to catch variations (modelResponse, message, text)
+                m_resp = res.get('response', {}).get('modelResponse') or res.get('modelResponse') or res
+                
+                if m_resp:
+                    # Look for content in various possible keys
+                    msg = m_resp.get('message') or m_resp.get('text')
+                    
+                    # Echo Prevention: Skip if the message is identical to our prompt (Echo)
+                    if msg and isinstance(msg, str) and msg.strip() != message.strip():
+                        # We only set response if it's the longest one we've seen (some chunks are partial)
+                        if not response or len(msg) > len(response):
+                            response = msg
+                    
+                    rid = m_resp.get('responseId')
+                    if rid: parent_response = rid
+                    
+                    urls = m_resp.get('generatedImageUrls')
+                    if urls: image_urls = urls
+
+                # 3. Stream Tokens (Incremental tokens)
+                token = res.get('response', {}).get('token') or res.get('token')
+                if token: stream_response.append(token)
+            
+            # FINAL FALLBACK: If 'response' is still None, but we have tokens, join them.
+            if not response and stream_response:
+                response = "".join(stream_response)
+            
+            # Return result if we found anything
+            if response or stream_response:
+                return {
+                    "response": response,
+                    "stream_response": stream_response,
+                    "images": image_urls,
+                    "extra_data": {
+                        "anon_user": self.anon_user,
+                        "cookies": self.session.cookies.get_dict(),
+                        "actions": self.actions,
+                        "xsid_script": self.xsid_script,
+                        "baggage": self.baggage,
+                        "sentry_trace": self.sentry_trace,
+                        "conversationId": conversation_id or (extra_data.get("conversationId") if extra_data else None),
+                        "parentResponseId": parent_response,
+                        "privateKey": self.keys["privateKey"]
+                    }
+                }
+            
+            return {"error": f"Grok returned 200 but no valid response was parsed. Raw: {convo_request.text[:200]}"}
+
+        except Exception as e:
+            logger.error(f"Grok request exception: {e}")
+            return {"error": str(e)}
             
 

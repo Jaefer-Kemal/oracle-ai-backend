@@ -15,7 +15,8 @@ from pydantic import BaseModel
 import time
 
 from models import SessionLocal, init_db, Document, VectorEntry, ChatHistory, AppSettings, ChatSession, User
-from services import CohereService, GrokService, ParserService
+from services import CohereService, AIService, ParserService
+from core.providers.factory import ProviderFactory
 from auth import create_access_token, create_refresh_token, decode_access_token, decode_refresh_token, get_password_hash, verify_password, get_current_user
 
 # --- Professional Logging Setup ---
@@ -62,7 +63,7 @@ def global_exception_handler(request: Request, exc: Exception):
 
 # Initialize Services
 cohere_service = CohereService()
-grok_service = GrokService()
+ai_service = AIService()
 parser_service = ParserService()
 ingestion_lock = threading.Lock()
 
@@ -125,6 +126,14 @@ class ProfileUpdate(BaseModel):
 def on_startup():
     logger.info("Initializing Database...")
     init_db()
+    
+    # Initialize AI Config Cache
+    db = SessionLocal()
+    try:
+        ProviderFactory.reload_config(db)
+    finally:
+        db.close()
+        
     logger.info("Backend Ready.")
 
 # --- Public Endpoints ---
@@ -173,21 +182,32 @@ def ingest_file(
         try:
             if ext == "pdf": raw_text = parser_service.extract_text_from_pdf(content)
             elif ext == "docx": raw_text = parser_service.extract_text_from_docx(content)
+            elif ext == "md": raw_text = content.decode("utf-8")
             else: raw_text = content.decode("utf-8")
         except Exception as e:
             raise HTTPException(status_code=400, detail="File parsing failed.")
 
+        # Auto-Categorization Logic
+        final_category = category
+        if category == "General" or not category:
+            try:
+                final_category = ai_service.suggest_category(raw_text, db)
+                logger.info(f"AI suggested category for '{file.filename}': {final_category}")
+            except Exception as e:
+                logger.warning(f"Failed to auto-categorize: {e}")
+                final_category = "General"
+
         chunks = parser_service.chunk_text(raw_text)
         embeddings = cohere_service.get_embeddings(chunks)
 
-        new_doc = Document(filename=file.filename, file_hash=file_hash, category=category, source_type="file")
+        new_doc = Document(filename=file.filename, file_hash=file_hash, category=final_category, source_type="file")
         db.add(new_doc)
         db.commit()
         db.refresh(new_doc)
 
         # Batch commits to prevent packet overload / connection drops with huge 1536-dim vectors
         for idx, (chunk, emb) in enumerate(zip(chunks, embeddings)):
-            entry = VectorEntry(doc_id=new_doc.id, content=chunk, embedding=emb, metadata_json={"category": category})
+            entry = VectorEntry(doc_id=new_doc.id, content=chunk, embedding=emb, metadata_json={"category": final_category})
             db.add(entry)
             
             if (idx + 1) % 50 == 0:
@@ -254,10 +274,13 @@ def check_synergy(req: ManualKnowledgeRequest, db: Session = Depends(get_db), us
 # --- Query Endpoints ---
 
 @app.post("/query", tags=["Query"], summary="Ask a Question")
-def query_rag(req: QueryRequest, db: Session = Depends(get_db)):
+async def query_rag(req: QueryRequest, db: Session = Depends(get_db)):
     start_time = time.time()
-    config = {s.key: s.value for s in db.query(AppSettings).all()}
-    threshold = float(config.get("similarity_threshold", "0.5"))
+    
+    # Pulled from Factory Cache vs DB Query
+    # NOTE: 'similarity_threshold' is stored as a DISTANCE value (0.0=perfect, 1.0=no match)
+    # So a threshold of 0.85 means: include results with distance <= 0.85 (similarity >= 0.15)
+    threshold = float(ProviderFactory._config_cache.get("similarity_threshold", "0.85"))
 
     # Session Management
     session_id = req.session_id or str(uuid.uuid4())
@@ -277,39 +300,52 @@ def query_rag(req: QueryRequest, db: Session = Depends(get_db)):
 
     # 1. Query Reformulation — runs on ALL queries (not just history-backed ones)
     # This strips personal noise ("my name is X") and extracts core intent
-    search_query = grok_service.decontextualize_query(req.input, history_data, db)
+    # 1. Query Reformulation (Threaded)
+    history_data_list = history_data # local ref
+    search_query = await asyncio.to_thread(ai_service.decontextualize_query, req.input, history_data_list, db)
 
-    # 2. Retrieval using the precise "search_query" input type
-    query_emb = cohere_service.get_embeddings([search_query], input_type="search_query")[0]
+    # 2. Retrieval (Threaded - Safe)
+    resp = await asyncio.to_thread(cohere_service.get_embeddings, [search_query], input_type="search_query")
+    query_emb = resp[0]
     
+    # Run the query in main thread or use a robust thread-safe pattern
+    # We'll use the main thread for the actual query to ensure session stability
     results = db.query(VectorEntry, VectorEntry.embedding.cosine_distance(query_emb).label("dist"))\
         .join(Document)\
         .filter(Document.is_deleted == False)\
         .order_by("dist").limit(5).all()
     
-    valid_results = [r for r in results if r.dist < threshold]
+    # Corrected Logic: Threshold is a DISTANCE value.
+    # Lower distance = more similar. Filter: include if dist <= threshold.
+    valid_results = [r for r in results if r.dist <= threshold]
     
-    # ... Build source objects ...
+    # Debug: Log what we found
+    logger.info(f"Vector Search: {len(results)} raw results, {len(valid_results)} passed threshold ({threshold}) for query: '{search_query[:60]}'")
+    for r in results:
+        logger.info(f"  -> Doc: {r.VectorEntry.document.filename if r.VectorEntry.document else 'N/A'} | dist={r.dist:.4f} | similarity={round((1-r.dist)*100, 1)}% | passed={'YES' if r.dist <= threshold else 'NO'}")
+    
+    # Build source objects (Chunks)
     sources = [
         {
-            "id": r.VectorEntry.id, "doc_id": r.VectorEntry.doc_id, "content": r.VectorEntry.content,
-            "score": round(1 - r.dist, 3), "filename": r.VectorEntry.document.filename if r.VectorEntry.document else None,
+            "id": r.VectorEntry.id, 
+            "doc_id": r.VectorEntry.doc_id, 
+            "content": r.VectorEntry.content,
+            "score": round(1 - r.dist, 3), 
+            "filename": r.VectorEntry.document.filename if r.VectorEntry.document else "Unknown",
         }
         for r in valid_results
     ]
 
     # 3. Hybrid Logic Decision
     has_context = len(valid_results) > 0
-    has_history = len(history_data) > 0
-
     context_chunks = [r["content"] for r in sources] if has_context else []
     
     try:
         is_conv = not has_context  # pure conversational if no docs found
-        answer = grok_service.generate_answer(req.input, context_chunks, db, history_data, is_conversational=is_conv)
+        answer = await asyncio.to_thread(ai_service.generate_answer, req.input, context_chunks, db, history_data_list, is_conv)
 
         # Strict Output Parsing: Validate against engine failure or safety fallback
-        expected_fallback = config.get("fallback_message", "")
+        expected_fallback = ProviderFactory._config_cache.get("fallback_message", "")
         if answer.startswith("Error:") or answer.startswith("I am currently experiencing a processing error."):
             mode = "error"
         elif expected_fallback and answer.strip() == expected_fallback.strip():
@@ -318,25 +354,36 @@ def query_rag(req: QueryRequest, db: Session = Depends(get_db)):
             mode = "semantic" if has_context else "conversational"
             
     except Exception as e:
-        logger.error(f"Grok Error: {str(e)}")
-        answer = config.get("fallback_message", "I am currently experiencing a processing error. Please retry your query shortly.")
+        logger.error(f"AI Generation Error: {str(e)}")
+        answer = ProviderFactory._config_cache.get("fallback_message", "I am currently experiencing a processing error. Please retry your query shortly.")
         mode = "error"
 
-    # Auto-title generation for first message
+    # Parallel Post-Processing: Title + Follow-ups
+    background_tasks = []
+    
+    # Task: Title generation for first message
     if not history_data:
-        try:
-            new_title = grok_service.generate_chat_title(req.input, db)
-            session.title = new_title
-        except: pass
+        background_tasks.append(asyncio.to_thread(ai_service.generate_chat_title, req.input, db))
+    else:
+        background_tasks.append(asyncio.sleep(0, result=None)) # placeholder
 
-    # Dynamic Follow-ups Generation
-    follow_ups = []
-    if mode in ["semantic", "conversational"]:
-        try:
-            follow_ups = grok_service.generate_followups(answer, req.input, context_chunks)
-        except: pass
+    # Task: Dynamic Follow-ups Generation
+    if mode in ["semantic", "conversational", "fallback"]:
+        background_tasks.append(asyncio.to_thread(ai_service.generate_followups, answer, req.input, context_chunks, db))
+    else:
+        background_tasks.append(asyncio.sleep(0, result=[])) # placeholder
 
-    # Save History — always store, even if Grok failed, so the session is preserved
+    # Await all background tasks concurrently
+    results_async = await asyncio.gather(*background_tasks, return_exceptions=True)
+    
+    # Process Results
+    new_title = results_async[0] if not isinstance(results_async[0], Exception) else None
+    follow_ups = results_async[1] if not isinstance(results_async[1], Exception) else []
+
+    if new_title:
+        session.title = new_title
+
+    # Save History — stores context chunks as 'sources' like before
     new_history = ChatHistory(
         session_id=session_id,
         query=req.input,
@@ -397,7 +444,7 @@ def get_public_session_history(session_id: str, db: Session = Depends(get_db)):
     """Publicly accessible history for guest sessions only."""
     session = db.query(ChatSession).filter(ChatSession.id == session_id).first()
     if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
+        return []
     
     # Security: If it's an internal session, it cannot be accessed without auth
     if session.is_internal:
@@ -490,6 +537,10 @@ def update_config(req: ConfigUpdate, db: Session = Depends(get_db), user: str = 
         if setting: setting.value = str(v)
         else: db.add(AppSettings(key=k, value=str(v)))
     db.commit()
+    
+    # Critical: Reload Config Cache in Factory immediately after update
+    ProviderFactory.reload_config(db)
+    
     return {"status": "success"}
 
 # --- Auth Endpoints ---

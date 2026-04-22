@@ -23,7 +23,7 @@ class G4FProvider:
         """
         from g4f.Provider import PollinationsAI, DDGS
         
-        # verified stable (provider, model) pairs
+        # verified stable (provider, model) pairs - Zero Auth Required
         stable_pairs = [
             (PollinationsAI, "openai"),
             (DDGS, "gpt-4o-mini"),
@@ -46,7 +46,7 @@ class G4FProvider:
                 
                 if response and isinstance(response, str):
                     return {
-                        "text": response,
+                        "response": response,
                         "provider": f"g4f:{p_name}",
                         "model": model_name
                     }

@@ -15,16 +15,24 @@ class Parser:
     _grok_mapping_loaded: bool = False
     
     @classmethod
+    def _get_mapping_path(cls, filename: str) -> str:
+        # Get path relative to the file itself
+        base_dir = path.dirname(path.dirname(path.abspath(__file__)))
+        return path.join(base_dir, 'mappings', filename)
+
+    @classmethod
     def _load__xsid_mapping(cls):
-        if not cls._mapping_loaded and path.exists('core/mappings/txid.json'):
-            with open('core/mappings/txid.json', 'r') as f:
+        txid_path = cls._get_mapping_path('txid.json')
+        if not cls._mapping_loaded and path.exists(txid_path):
+            with open(txid_path, 'r') as f:
                 cls.mapping = load(f)
             cls._mapping_loaded = True
             
     @classmethod
     def _load_grok_mapping(cls):
-        if not cls._grok_mapping_loaded and path.exists('core/mappings/grok.json'):
-            with open('core/mappings/grok.json', 'r') as f:
+        grok_path = cls._get_mapping_path('grok.json')
+        if not cls._grok_mapping_loaded and path.exists(grok_path):
+            with open(grok_path, 'r') as f:
                 cls.grok_mapping = load(f)
             cls._grok_mapping_loaded = True
     
@@ -55,7 +63,7 @@ class Parser:
                 script_content: str = requests.get(script_link, impersonate="chrome136").text
                 numbers: list = [int(x) for x in findall(r'x\[(\d+)\]\s*,\s*16', script_content)]
                 Parser.mapping[script_link] = numbers
-                with open('core/mappings/txid.json', 'w') as f:
+                with open(Parser._get_mapping_path('txid.json'), 'w') as f:
                     dump(Parser.mapping, f)
 
             return svg_data, numbers
@@ -101,7 +109,7 @@ class Parser:
                 "actions": actions
             })
             
-            with open('core/mappings/grok.json', 'w') as f:
+            with open(Parser._get_mapping_path('grok.json'), 'w') as f:
                 dump(Parser.grok_mapping, f, indent=2)
                 
             return actions, xsid_script

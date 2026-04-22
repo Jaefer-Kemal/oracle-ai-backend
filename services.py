@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 from core.providers.factory import ProviderFactory
 from core.providers.grok import Grok, _Models
 import logging
+import json
 from sqlalchemy.orm import Session
 
 logger = logging.getLogger("rag-backend.services")
@@ -55,15 +56,12 @@ class CohereService:
                 time.sleep(self.rate_limit_pause)
         return all_embeddings
 
-class GrokService:
+class AIService:
     def __init__(self):
         pass
 
-    def _get_model(self, db: Session) -> str:
-        from models import AppSettings
-        
-        setting = db.query(AppSettings).filter(AppSettings.key == "grok_model").first()
-        requested_model = setting.value if setting else "grok-3-auto"
+    def _get_model(self) -> str:
+        requested_model = ProviderFactory._config_cache.get("grok_model", "grok-3-auto")
         
         # Validation: Fallback if model is not in the allowed list
         if requested_model not in _Models.models.keys():
@@ -74,8 +72,12 @@ class GrokService:
     def decontextualize_query(self, query: str, history: List[Dict[str, str]], db: Session) -> str:
         """Industry Standard (Rewrite-Retrieve-Read): Extract core search intent from conversational input."""
         try:
-            model = self._get_model(db)
-            grok_client = Grok(model)
+            # Short-circuit for vague follow-ups if history exists
+            vague_terms = ["tell me more", "give me more", "more information", "what else", "continue", "elaborate"]
+            if query.lower().strip() in vague_terms and history:
+                # Use the last query as the baseline for retrieval
+                return history[-1]['q']
+
             history_str = "\n".join([f"User: {h['q']}\nAssistant: {h['a']}" for h in history[-5:]]) if history else "None"
             
             prompt = f"""You are a query extraction specialist. Your task is to extract a clean, standalone search query from the user's message.
@@ -85,7 +87,7 @@ class GrokService:
 2. REMOVE all conversational openers (e.g., "I want to know", "can you tell me", "please explain")
 3. EXTRACT only the core topic, entity, or question.
 4. RESOLVE pronouns using the conversation history (e.g., "tell me more about it" -> use the topic from history).
-5. If the message is a short follow-up (e.g., "are you sure?", "explain that"), extract the LAST TOPIC from the history.
+5. If the user asks for "more" or "continue", identify exactly what topic they are referring to from the history.
 6. Return ONLY the clean search query. No quotes, no explanations, no conversational filler.
 </rules>
 
@@ -99,7 +101,8 @@ class GrokService:
 
 Clean Search Query:"""
             
-            response = grok_client.start_convo(prompt)
+            # Use FLASH-LITE for decontextualization (2026 Stable ID)
+            response = ProviderFactory.generate_answer(db, prompt, history, model_override="gemini-flash-lite-latest")
             result = response.get("response", query).strip().replace('"', '').replace("'", "").split('\n')[0].strip()
             # Sanity check: don't return an empty or obviously broken query
             return result if len(result) > 3 else query
@@ -110,9 +113,6 @@ Clean Search Query:"""
         """Generation with Chat History and specific RAG Prompt."""
         from models import AppSettings
         try:
-            model = self._get_model(db)
-            grok_client = Grok(model)
-            
             # Format Context
             context_str = "\n\n".join([f"--- Source {i+1} ---\n{c}" for i, c in enumerate(context)])
             
@@ -122,23 +122,22 @@ Clean Search Query:"""
                 history_text = "\n".join([f"User: {h['q']}\nAssistant: {h['a']}" for h in history])
                 history_str = f"<history>\n{history_text}\n</history>\n"
 
-            # Fetch fallback from DB
-            fb_msg = db.query(AppSettings).filter(AppSettings.key == "fallback_message").first()
-            fallback_text = fb_msg.value if fb_msg else "I'm sorry, I don't have information on that."
+            # Fetch fallback from Factory Cache
+            fallback_text = ProviderFactory._config_cache.get("fallback_message", "I'm sorry, I don't have information on that.")
 
             prompt = f"""<system_directive>
-You are the internal AI Knowledge Assistant for the Company.
-
+You are the internal AI Knowledge Assistant for Oracle AI Solutions.
+ 
 Your mission is to provide highly accurate information based EXCLUSIVELY on the provided <retrieved_context> for factual questions. You must maintain a professional yet comfortably casual and approachable tone—think of yourself as a knowledgeable colleague who is both helpful and expert.
-
+ 
 **Special Handling:** 
 - **Greetings/Small Talk**: You are allowed to respond naturally to greetings or casual remarks (e.g., "Hi", "How's it going?") without requiring context.
-- **Vague Queries**: If a user asks something vague (e.g., "tell me more", "what else?") and there is no clear context or history to link it to, politely ask for clarification (e.g., "I'd love to help! Could you specify what you'd like to know more about regarding company policies?") instead of triggering a fallback.
+- **Vague Queries ("Tell me more", "Give me more")**: If a user asks for more information and context exists, provide deeper technical details or related trivia from the context. If no clear context exists but there is conversation history, clarify the topic: "I'd be happy to share more! Are we still discussing [Topic from History], or would you like to explore something new?"
 </system_directive>
 
 <tone_and_style_guidelines>
 1. Be Conversational: Speak naturally and casually. Use friendly greetings (e.g., "Hey there!", "Happy to help with that!", "Sure thing!").
-2. No Robotic Fallbacks: Never start a response with just a fallback message. Always acknowledge the user's intent first.
+2. No Robotic/Technical Language: Never mention "context", "knowledge base", "retrieved documents", or "databases". Never say "No relevant context found".
 3. Be Professional: Even when casual, ensure your grammar is perfect and your information is delivered clearly.
 4. Be Concise: Answer exactly what is asked. Use bullet points or lists for multi-part information.
 </tone_and_style_guidelines>
@@ -150,25 +149,25 @@ Your mission is to provide highly accurate information based EXCLUSIVELY on the 
 </strict_grounding_rules>
 
 <fallback_protocol>
-If the <retrieved_context> does not contain the specific answer to a factual question, you must handle it gracefully with a professional, dynamic lead-in.
-
-- Partial Match: Share what you *do* find in the records, and then pivot naturally to explain what is missing.
-- Complete Miss: Naturally apologize. Phrase this dynamically based on the query (e.g., "I've looked through our current records on [Topic], but I couldn't find those specific details."). You MUST APPEND the exact fallback message at the very end.
-- System Fallback to Append: "{fallback_text}"
+If the <retrieved_context> does not contain the specific answer to a factual question, you must handle it gracefully with a professional, dynamic lead-in. Avoid robotic "I don't know" responses.
+ 
+- **Partial Match**: "While our primary records on [Strict Topic] are currently being updated, here is what I can share regarding the related areas I found..."
+- **Complete Miss**: Naturally acknowledge the topic and explain the limitation. "I've carefully reviewed our internal knowledge base for details on [Topic], but it seems we don't have those specific records on file at the moment. {fallback_text}"
+- **Vague Follow-up**: If context is provided but the user just says "tell me more," dive into the secondary details of the provided context (prices, locations, technical specs) that weren't mentioned in the previous turn.
 </fallback_protocol>
 
 <examples>
   <example_1>
     <scenario>Simple Greeting</scenario>
     <user_query>Hi there!</user_query>
-    <retrieved_context>No relevant context found.</retrieved_context>
+    <retrieved_context>[EMPTY]</retrieved_context>
     <ideal_response>Hey! I'm here to help you navigate our company knowledge base. What can I look up for you today?</ideal_response>
   </example_1>
 
   <example_2>
     <scenario>Vague Query (No Context)</scenario>
     <user_query>Tell me more.</user_query>
-    <retrieved_context>No relevant context found.</retrieved_context>
+    <retrieved_context>[EMPTY]</retrieved_context>
     <ideal_response>I'd be happy to tell you more! Could you let me know which specific topic or policy you're interested in? That way I can give you the most accurate details.</ideal_response>
   </example_2>
 
@@ -182,7 +181,7 @@ If the <retrieved_context> does not contain the specific answer to a factual que
   <example_4>
     <scenario>Complete Fallback</scenario>
     <user_query>What are the details of the Q3 Marketing Campaign launch?</user_query>
-    <retrieved_context>No relevant context found.</retrieved_context>
+    <retrieved_context>[EMPTY]</retrieved_context>
     <ideal_response>I've checked our internal records, but I couldn't find any specific details on the Q3 Marketing Campaign launch yet. {fallback_text}</ideal_response>
   </example_4>
 </examples>
@@ -193,7 +192,7 @@ If the <retrieved_context> does not contain the specific answer to a factual que
 </conversation_history>
 
 <retrieved_context>
-{context_str if context_str else "No relevant context found."}
+{context_str if context_str else "[EMPTY]"}
 </retrieved_context>
 </input_data>
 
@@ -211,68 +210,113 @@ User Query: {query}
             
             if "error" in response:
                 logger.error(f"Provider Failure (All fallbacks exhausted): {response['error']}")
-                fb_msg = db.query(AppSettings).filter(AppSettings.key == "fallback_message").first()
-                return fb_msg.value if fb_msg else "I'm sorry, I'm having trouble connecting to my knowledge base right now. Please try again in a moment."
+                return ProviderFactory._config_cache.get("fallback_message", "I'm sorry, I'm having trouble connecting to my knowledge base right now. Please try again in a moment.")
             
             final_text = response.get("response")
             return final_text or "Error: No response from generation engine."
         except Exception as e:
-            logger.error(f"Grok Generate Answer Error: {e}")
-            # Dynamic Fallback from DB
-            fb_msg = db.query(AppSettings).filter(AppSettings.key == "fallback_message").first()
-            return fb_msg.value if fb_msg else "I am currently experiencing a processing error. Please retry your query shortly."
+            logger.error(f"AI Generate Answer Error: {e}")
+            # Dynamic Fallback from Cache
+            return ProviderFactory._config_cache.get("fallback_message", "I am currently experiencing a processing error. Please retry your query shortly.")
 
     def generate_chat_title(self, first_query: str, db: Session) -> str:
         """Generate a short (3-5 word) summary for the chat session title."""
         try:
-            model = self._get_model(db)
-            grok_client = Grok(model)
             prompt = f"Summarize the following user query into a 3 to 5 word professional chat title. Only provide the title text, nothing else.\n\nQuery: {first_query}\n\nTitle:"
-            response = grok_client.start_convo(prompt)
+            # Use FLASH-LITE for title generation
+            response = ProviderFactory.generate_answer(db, prompt, model_override="gemini-flash-lite-latest")
             title = response.get("response", "New Conversation").strip().replace('"', '')
             return title[:50] # Safety limit
         except Exception as e:
             logger.error(f"Grok Generate Title Error: {e}")
             return "Professional Session"
 
-    def generate_followups(self, answer: str, query: str, context: List[str]) -> List[str]:
-        """Generate 3 extremely short follow-up questions based on the query, context, and answer using minimal latency grok-3-fast."""
+    def generate_followups(self, answer: str, query: str, context: List[str], db: Session) -> List[str]:
+        """Generate exactly 3 extremely short follow-up questions using robust Regex parsing."""
+        import re
+        fallback_suggestions = []
         try:
-            context_str = "\n".join(context)[:2000] # Cap context so prompt isn't too huge
-            grok_client = Grok("grok-3-fast")
-            prompt = f"""You are an expert UX researcher analyzing how users explore information.
-Based on the user's original query, the provided context, and the AI's answer, generate exactly 3 highly specific, engaging follow-up questions a user would logically ask next to dive deeper.
+            suggested_raw = ProviderFactory._config_cache.get("suggested_questions", "[]")
+            if isinstance(suggested_raw, (str, list)):
+                if isinstance(suggested_raw, str):
+                    try:
+                        fallback_suggestions = json.loads(suggested_raw)
+                    except:
+                        fallback_suggestions = []
+                else:
+                    fallback_suggestions = suggested_raw
+        except:
+            pass
+
+        try:
+            if not answer or len(answer) < 15: 
+                return fallback_suggestions[:3]
+
+            context_str = "\n".join(context)[:2000]
+            prompt = f"""You are a professional conversationalist.
+Your goal is to provide exactly 3 extremely brief follow-up questions.
 
 <rules>
-1. Questions MUST strictly reference specific entities, nouns, or concepts mentioned in the context or answer.
-2. AVOID generic questions (e.g., "Tell me more", "How does it work?", "What are the rules?").
-3. Focus on practical application, limitations, or deeper exploration of the topic that the user is currently asking about.
-4. Keep questions concise (Maximum 8 words per question).
-5. Output ONLY a comma-separated list of the 3 questions. No numbering, no introduction.
+1. Output EXACTLY 3 questions.
+2. Separate them with a comma or new line.
+3. NO numbering (don't use 1. 2. 3.).
+4. Reference the specific facts in the provided context and answer.
 </rules>
 
-<user_query>
-{query}
-</user_query>
+<user_query>{query}</user_query>
+<context>{context_str}</context>
+<answer>{answer}</answer>
 
-<context>
-{context_str}
-</context>
-
-<ai_answer>
-{answer}
-</ai_answer>
-
-Follow-up questions:"""
-            response = grok_client.start_convo(prompt)
+Output (exactly 3 questions):"""
+            # Use FLASH-LITE for follow-ups
+            response = ProviderFactory.generate_answer(db, prompt, model_override="gemini-flash-lite-latest")
             result = response.get("response", "").strip()
             
-            # Parse CSV to list
-            questions = [q.strip() for q in result.split(",") if q.strip()]
-            return questions[:3]
+            # Robust Parsing Strategy:
+            # 1. Split by common delimiters (newline, comma, or even ? followed by space)
+            # Use regex to split by \n OR , OR (? followed by space/start of next)
+            raw_parts = re.split(r'\n|,|\?+(?=\s|[A-Z]|$)', result)
+            
+            cleaned = []
+            for p in raw_parts:
+                # Clean up: remove numbering, quotes, and whitespace
+                p_clean = re.sub(r'^\d+[\.\)]\s*', '', p.strip()) # Remove "1. " or "1) "
+                p_clean = p_clean.replace('"', '').replace("'", "").strip()
+                
+                # Add back the question mark if it was lost in split
+                if p_clean and not p_clean.endswith('?'):
+                    p_clean += '?'
+                
+                if p_clean and len(p_clean) > 5:
+                    cleaned.append(p_clean)
+
+            # Ensure exactly 3
+            if len(cleaned) < 3:
+                # Add fallbacks if AI under-generated
+                for fs in fallback_suggestions:
+                    if fs not in cleaned:
+                        cleaned.append(fs)
+                    if len(cleaned) >= 3: break
+            
+            return cleaned[:3]
         except Exception as e:
-            logger.error(f"Grok Followups Error: {e}")
-            return []
+            logger.error(f"Generate Followups Error: {e}")
+            return fallback_suggestions[:3]
+
+
+    def suggest_category(self, content: str, db: Session) -> str:
+        """Analyze document content and suggest a 1-2 word professional category."""
+        try:
+            # Use small sample of content
+            sample = content[:4000]
+            prompt = f"Analyze this text and suggest a single professional category (1-2 words). Examples: HR Policy, Technical Manual, Sales Strategy, Legal, Operations. ONLY provide the category name.\n\nText: {sample}\n\nCategory:"
+            # Use FLASH-LITE for categorization
+            response = ProviderFactory.generate_answer(db, prompt, model_override="gemini-flash-lite-latest")
+            category = response.get("response", "General").strip().replace('"', '').replace(".", "")
+            return category if len(category) > 1 else "General"
+        except Exception as e:
+            logger.error(f"Suggest Category Error: {e}")
+            return "General"
 
 class ParserService:
     @staticmethod
