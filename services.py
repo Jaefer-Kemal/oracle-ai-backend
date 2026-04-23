@@ -253,17 +253,22 @@ User Query: {query}
             greetings = ["hi", "hello", "hey", "hola", "greetings", "hi there", "good morning", "good afternoon"]
             is_greeting = query.lower().strip().rstrip("?!.") in greetings
             
-            # Refusal keywords (AI safety or inability to answer)
-            refusal_keywords = ["cannot answer", "unavailable", "illegal", "not allowed", "sorry", "no relevant context"]
-            is_refusal = any(k in answer.lower() for k in refusal_keywords)
+            # Robust Refusal Detection: check for common safety/failure patterns
+            refusal_keywords = [
+                "cannot answer", "unavailable", "illegal", "not allowed", "sorry", 
+                "no relevant context", "don't have information", "not found in context",
+                "cannot fulfill", "inappropriate", "offensive", "restricted"
+            ]
+            is_refusal = any(k in answer.lower() for k in refusal_keywords) or len(answer) < 30
 
-            # RULE: If there is NO RAG context, or if the AI is refusing/greeting, 
-            # do not ask the AI for creative follow-ups. Revert to the high-quality fallbacks.
+            # CRITICAL: If the AI is refusing, greeting, or starting without context,
+            # we return the STATIC "Oracle Starters" immediately.
+            # We NEVER invoke the AI generation prompt for these cases.
             if (not context or is_refusal or is_greeting) and fallback_suggestions:
                 return fallback_suggestions[:3]
 
-            # Critical check for valid answer length to avoid parsing empty/error strings
-            if not answer or len(answer) < 20: 
+            # Final sanity check: if answer is still too small, don't generate.
+            if not answer or len(answer) < 40: 
                 return fallback_suggestions[:3]
 
             context_str = "\n".join(context)[:2000]
