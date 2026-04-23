@@ -249,25 +249,33 @@ User Query: {query}
             pass
 
         try:
-            # Check for triggers to avoid "hallucinated" or "off-topic" AI suggestions
+            # 1. IMMEDIATE RAG FALLBACK (Pre-Detection)
+            # If the vector search found nothing, we already know we are in a fallback state.
+            # We return starters immediately without even looking at the AI's answer.
+            if not context and fallback_suggestions:
+                return fallback_suggestions[:3]
+
+            # 2. GREETING/START DETECTION
             greetings = ["hi", "hello", "hey", "hola", "greetings", "hi there", "good morning", "good afternoon"]
             is_greeting = query.lower().strip().rstrip("?!.") in greetings
+            if is_greeting and fallback_suggestions:
+                return fallback_suggestions[:3]
             
-            # Robust Refusal Detection: check for common safety/failure patterns
+            # 3. PASSIVE REFUSAL DETECTION (Safety Check)
+            # Only if we had context, we check if the AI still refused for safety/other reasons.
             refusal_keywords = [
                 "cannot answer", "unavailable", "illegal", "not allowed", "sorry", 
                 "no relevant context", "don't have information", "not found in context",
-                "cannot fulfill", "inappropriate", "offensive", "restricted"
+                "cannot fulfill", "inappropriate", "offensive", "restricted", "safety policy",
+                "not able to help", "geopolitics", "sensitive", "america", "iran", "war", "conflict",
+                "my training", "unable to provide", "safety protocols", "ethical"
             ]
-            is_refusal = any(k in answer.lower() for k in refusal_keywords) or len(answer) < 30
+            is_refusal = any(k in answer.lower() for k in refusal_keywords) or len(answer) < 35
 
-            # CRITICAL: If the AI is refusing, greeting, or starting without context,
-            # we return the STATIC "Oracle Starters" immediately.
-            # We NEVER invoke the AI generation prompt for these cases.
-            if (not context or is_refusal or is_greeting) and fallback_suggestions:
+            if is_refusal and fallback_suggestions:
                 return fallback_suggestions[:3]
 
-            # Final sanity check: if answer is still too small, don't generate.
+            # Final sanity check for valid answer length
             if not answer or len(answer) < 40: 
                 return fallback_suggestions[:3]
 

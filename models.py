@@ -13,8 +13,15 @@ load_dotenv()
 
 # Database Setup (Neon/Postgres)
 DATABASE_URL = os.getenv("DATABASE_URL")
+if not DATABASE_URL:
+    logger.error("FATAL: DATABASE_URL environment variable is not set. Check Cloud Run secrets.")
+    # We allow the engine to be created with a placeholder to let the app import and log the error properly
+    _db_url = "postgresql://invalid:invalid@localhost/invalid"
+else:
+    _db_url = DATABASE_URL
+
 engine = create_engine(
-    DATABASE_URL,
+    _db_url,
     pool_pre_ping=True,        # Test connection before use — kills stale Neon connections
     pool_recycle=300,          # Recycle connections every 5 min to avoid Neon idle drops
     pool_size=5,
