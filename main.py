@@ -369,7 +369,7 @@ async def query_rag(req: QueryRequest, db: Session = Depends(get_db)):
 
     # Task: Dynamic Follow-ups Generation
     if mode in ["semantic", "conversational", "fallback"]:
-        background_tasks.append(asyncio.to_thread(ai_service.generate_followups, answer, req.input, context_chunks, db))
+        background_tasks.append(asyncio.to_thread(ai_service.generate_followups, answer, req.input, context_chunks, db, history_data))
     else:
         background_tasks.append(asyncio.sleep(0, result=[])) # placeholder
 

@@ -231,7 +231,7 @@ User Query: {query}
             logger.error(f"Grok Generate Title Error: {e}")
             return "Professional Session"
 
-    def generate_followups(self, answer: str, query: str, context: List[str], db: Session) -> List[str]:
+    def generate_followups(self, answer: str, query: str, context: List[str], db: Session, history: List[dict] = None) -> List[str]:
         """Generate exactly 3 extremely short follow-up questions using robust Regex parsing."""
         import re
         fallback_suggestions = []
@@ -249,6 +249,14 @@ User Query: {query}
             pass
 
         try:
+            # Check for empty context or short greetings to provide standard "Oracle Starters"
+            greetings = ["hi", "hello", "hey", "hola", "greetings", "hi there", "good morning", "good afternoon"]
+            is_greeting = query.lower().strip().rstrip("?!.") in greetings
+            
+            # If we just started or have no context and it's a greeting, return fallback "Starters"
+            if (not context or not history) and is_greeting and fallback_suggestions:
+                return fallback_suggestions[:3]
+
             if not answer or len(answer) < 15: 
                 return fallback_suggestions[:3]
 
