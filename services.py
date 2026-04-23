@@ -249,15 +249,21 @@ User Query: {query}
             pass
 
         try:
-            # Check for empty context or short greetings to provide standard "Oracle Starters"
+            # Check for triggers to avoid "hallucinated" or "off-topic" AI suggestions
             greetings = ["hi", "hello", "hey", "hola", "greetings", "hi there", "good morning", "good afternoon"]
             is_greeting = query.lower().strip().rstrip("?!.") in greetings
             
-            # If we just started or have no context and it's a greeting, return fallback "Starters"
-            if (not context or not history) and is_greeting and fallback_suggestions:
+            # Refusal keywords (AI safety or inability to answer)
+            refusal_keywords = ["cannot answer", "unavailable", "illegal", "not allowed", "sorry", "no relevant context"]
+            is_refusal = any(k in answer.lower() for k in refusal_keywords)
+
+            # RULE: If there is NO RAG context, or if the AI is refusing/greeting, 
+            # do not ask the AI for creative follow-ups. Revert to the high-quality fallbacks.
+            if (not context or is_refusal or is_greeting) and fallback_suggestions:
                 return fallback_suggestions[:3]
 
-            if not answer or len(answer) < 15: 
+            # Critical check for valid answer length to avoid parsing empty/error strings
+            if not answer or len(answer) < 20: 
                 return fallback_suggestions[:3]
 
             context_str = "\n".join(context)[:2000]
