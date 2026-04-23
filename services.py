@@ -253,29 +253,30 @@ User Query: {query}
                 return fallback_suggestions[:3]
 
             context_str = "\n".join(context)[:2000]
-            prompt = f"""You are a professional conversationalist.
-Your goal is to provide exactly 3 extremely brief follow-up questions.
+            prompt = f"""You are a copywriter for user intent.
+Your goal is to provide exactly 3 extremely brief follow-up questions or requests that a HUMAN USER would say next.
 
 <rules>
-1. Output EXACTLY 3 questions.
-2. Separate them with a comma or new line.
-3. NO numbering (don't use 1. 2. 3.).
-4. Reference the specific facts in the provided context and answer.
+1. USE FIRST PERSON: Always phrase from the user's perspective (e.g., "Tell me about...", "I want to see...").
+2. TOPIC DIVERSITY: Each of the 3 suggestions must be independent and cover different angles of the context (e.g., don't suggest 3 versions of "How much does it cost?").
+3. DO NOT use "You": Phrases like "You can ask about" are forbidden.
+4. BE PROACTIVE: Suggestions should be new inquiries for further exploration.
+5. Output EXACTLY 3 items, one per line.
+6. NO numbering.
 </rules>
 
 <user_query>{query}</user_query>
 <context>{context_str}</context>
 <answer>{answer}</answer>
 
-Output (exactly 3 questions):"""
+Output (exactly 3 questions, 1 per line):"""
             # Use FLASH-LITE for follow-ups
             response = ProviderFactory.generate_answer(db, prompt, model_override="gemini-flash-lite-latest")
             result = response.get("response", "").strip()
             
             # Robust Parsing Strategy:
-            # 1. Split by common delimiters (newline, comma, or even ? followed by space)
-            # Use regex to split by \n OR , OR (? followed by space/start of next)
-            raw_parts = re.split(r'\n|,|\?+(?=\s|[A-Z]|$)', result)
+            # We now strictly split by NEWLINES to avoid fragments from commas or internal question marks.
+            raw_parts = re.split(r'\n+', result)
             
             cleaned = []
             for p in raw_parts:
